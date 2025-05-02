@@ -1,0 +1,126 @@
+✅ Arduino Code
+cpp
+Copy
+Edit
+#include <SPI.h>
+
+// MUX control pins
+const int muxS0 = 2;
+const int muxS1 = 3;
+const int muxS2 = 4;
+const int muxS3 = 5;
+
+// RTD selection
+const int btnPT100  = 6;
+const int btnPT1000 = 7;
+const int ledPT100  = 8;
+const int ledPT1000 = 9;
+
+// Analog & PWM
+const int rtdADC    = A0;
+const int currentPWM = 3;  // Controls Vin+ of INA333 via RC filter
+
+// SPI output pin
+const int spiSS = 10;
+
+// Constants
+const float R_ref = 10.0;   // Resistor on BJT emitter
+const float Vcc = 5.0;
+const float ADC_Resolution = 1023.0;
+
+bool usePT100 = true;
+
+void setup() {
+  pinMode(muxS0, OUTPUT);
+  pinMode(muxS1, OUTPUT);
+  pinMode(muxS2, OUTPUT);
+  pinMode(muxS3, OUTPUT);
+
+  pinMode(btnPT100, INPUT_PULLUP);
+  pinMode(btnPT1000, INPUT_PULLUP);
+
+  pinMode(ledPT100, OUTPUT);
+  pinMode(ledPT1000, OUTPUT);
+
+  pinMode(currentPWM, OUTPUT);
+  pinMode(rtdADC, INPUT);
+
+  pinMode(spiSS, OUTPUT);
+  digitalWrite(spiSS, HIGH);
+
+  SPI.begin();
+
+  Serial.begin(9600);
+}
+
+void loop() {
+  checkButtons();
+  selectMUXChannel(usePT100 ? 1 : 16);
+
+  pulseExcitation();  // Energize RTD briefly
+
+  int rawADC = analogRead(rtdADC);
+  float voltage = rawADC * (Vcc / ADC_Resolution);
+  float current_mA = 1.0;  // Assuming PWM creates ~1V at INA333 input, and R_ref = 10Ω
+  float resistance = voltage / (current_mA / 1000.0);
+
+  float temperature = calculateTempCVD(resistance, usePT100 ? 100.0 : 1000.0);
+
+  Serial.print("RTD Resistance: "); Serial.print(resistance);
+  Serial.print(" Ω  |  Temperature: "); Serial.print(temperature); Serial.println(" °C");
+
+  sendSPIData(temperature);
+  delay(1000);
+}
+
+// -----------------------------------------
+
+void checkButtons() {
+  if (digitalRead(btnPT100) == LOW) {
+    usePT100 = true;
+    digitalWrite(ledPT100, HIGH);
+    digitalWrite(ledPT1000, LOW);
+  } else if (digitalRead(btnPT1000) == LOW) {
+    usePT100 = false;
+    digitalWrite(ledPT100, LOW);
+    digitalWrite(ledPT1000, HIGH);
+  }
+}
+
+void selectMUXChannel(int channel) {
+  digitalWrite(muxS0, channel & 0x01);
+  digitalWrite(muxS1, (channel >> 1) & 0x01);
+  digitalWrite(muxS2, (channel >> 2) & 0x01);
+  digitalWrite(muxS3, (channel >> 3) & 0x01);
+}
+
+void pulseExcitation() {
+  analogWrite(currentPWM, 128); // 50% PWM = ~2.5V → ~1V after RC
+  delay(10);                    // Let current settle
+  analogWrite(currentPWM, 0);   // Turn off
+}
+
+float calculateTempCVD(float R, float R0) {
+  // Solve quadratic: R = R0(1 + A*T + B*T^2)
+  // => B*T^2 + A*T + (1 - R/R0) = 0
+  float a = B;
+  float b = A;
+  float c = 1 - (R / R0);
+
+  float discriminant = b * b - 4 * a * c;
+  if (discriminant < 0) return -999;
+
+  float T = (-b + sqrt(discriminant)) / (2 * a);
+  return T;
+}
+
+void sendSPIData(float tempC) {
+  uint16_t tempFixed = (uint16_t)(tempC * 100);  // e.g., 23.45°C → 2345
+  byte highByte = (tempFixed >> 8) & 0xFF;
+  byte lowByte  = tempFixed & 0xFF;
+
+  digitalWrite(spiSS, LOW);
+  SPI.transfer(highByte);
+  SPI.transfer(lowByte);
+  digitalWrite(spiSS, HIGH);
+}
